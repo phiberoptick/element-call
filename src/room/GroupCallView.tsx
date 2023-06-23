@@ -34,7 +34,7 @@ import { useSentryGroupCallHandler } from "./useSentryGroupCallHandler";
 import { useLocationNavigation } from "../useLocationNavigation";
 import { PosthogAnalytics } from "../analytics/PosthogAnalytics";
 import { useMediaHandler } from "../settings/useMediaHandler";
-import { findDeviceByName, getDevices } from "../media-utils";
+import { findDeviceByName, getNamedDevices } from "../media-utils";
 
 declare global {
   interface Window {
@@ -102,7 +102,7 @@ export function GroupCallView({
         // Get the available devices so we can match the selected device
         // to its ID. This involves getting a media stream (see docs on
         // the function) so we only do it once and re-use the result.
-        const devices = await getDevices();
+        const devices = await getNamedDevices();
 
         const { audioInput, videoInput } = ev.detail
           .data as unknown as JoinCallData;
@@ -143,7 +143,7 @@ export function GroupCallView({
           groupCall.setLocalVideoMuted(videoInput === null),
         ]);
 
-        await groupCall.enter();
+        await enter();
         PosthogAnalytics.instance.eventCallEnded.cacheStartCall(new Date());
         PosthogAnalytics.instance.eventCallStarted.track(groupCall.groupCallId);
 
@@ -158,17 +158,17 @@ export function GroupCallView({
         widget.lazyActions.off(ElementWidgetActions.JoinCall, onJoin);
       };
     }
-  }, [groupCall, preload, setAudioInput, setVideoInput]);
+  }, [groupCall, preload, setAudioInput, setVideoInput, enter]);
 
   useEffect(() => {
     if (isEmbedded && !preload) {
       // In embedded mode, bypass the lobby and just enter the call straight away
-      groupCall.enter();
+      enter();
 
       PosthogAnalytics.instance.eventCallEnded.cacheStartCall(new Date());
       PosthogAnalytics.instance.eventCallStarted.track(groupCall.groupCallId);
     }
-  }, [groupCall, isEmbedded, preload]);
+  }, [groupCall, isEmbedded, preload, enter]);
 
   useSentryGroupCallHandler(groupCall);
 
@@ -203,7 +203,11 @@ export function GroupCallView({
       widget.api.transport.send(ElementWidgetActions.HangupCall, {});
     }
 
-    if (!isPasswordlessUser && !isEmbedded) {
+    if (
+      !isPasswordlessUser &&
+      !isEmbedded &&
+      !PosthogAnalytics.instance.isEnabled()
+    ) {
       history.push("/");
     }
   }, [groupCall, leave, isPasswordlessUser, isEmbedded, history]);
@@ -268,8 +272,23 @@ export function GroupCallView({
       );
     }
   } else if (left) {
-    if (isPasswordlessUser) {
-      return <CallEndedView client={client} />;
+    // The call ended view is shown for two reasons: prompting guests to create
+    // an account, and prompting users that have opted into analytics to provide
+    // feedback. We don't show a feedback prompt to widget users however (at
+    // least for now), because we don't yet have designs that would allow widget
+    // users to dismiss the feedback prompt and close the call window without
+    // submitting anything.
+    if (
+      isPasswordlessUser ||
+      (PosthogAnalytics.instance.isEnabled() && !isEmbedded)
+    ) {
+      return (
+        <CallEndedView
+          endedCallId={groupCall.groupCallId}
+          client={client}
+          isPasswordlessUser={isPasswordlessUser}
+        />
+      );
     } else {
       // If the user is a regular user, we'll have sent them back to the homepage,
       // so just sit here & do nothing: otherwise we would (briefly) mount the
@@ -281,7 +300,7 @@ export function GroupCallView({
   } else if (isEmbedded) {
     return (
       <FullScreenView>
-        <h1>{t("Loading room…")}</h1>
+        <h1>{t("Loading…")}</h1>
       </FullScreenView>
     );
   } else {

@@ -25,6 +25,14 @@ import { useClient } from "../ClientContext";
 import { InspectorContext } from "../room/GroupCallInspector";
 import { useModalTriggerState } from "../Modal";
 import { Config } from "../config/Config";
+import { ElementCallOpenTelemetry } from "../otel/otel";
+
+const gzip = (text: string): Blob => {
+  // encode as UTF-8
+  const buf = new TextEncoder().encode(text);
+  // compress
+  return new Blob([pako.gzip(buf)]);
+};
 
 interface RageShakeSubmitOptions {
   sendLogs: boolean;
@@ -93,6 +101,7 @@ export function useSubmitRageshake(): {
         body.append("user_agent", userAgent);
         body.append("installed_pwa", "false");
         body.append("touch_input", touchInput);
+        body.append("call_backend", "full-mesh");
 
         if (client) {
           const userId = client.getUserId();
@@ -235,13 +244,14 @@ export function useSubmitRageshake(): {
           const logs = await getLogsForReport();
 
           for (const entry of logs) {
-            // encode as UTF-8
-            let buf = new TextEncoder().encode(entry.lines);
-            // compress
-            buf = pako.gzip(buf);
-
-            body.append("compressed-log", new Blob([buf]), entry.id);
+            body.append("compressed-log", gzip(entry.lines), entry.id);
           }
+
+          body.append(
+            "file",
+            gzip(ElementCallOpenTelemetry.instance.rageshakeProcessor!.dump()),
+            "traces.json.gz"
+          );
 
           if (inspectorState) {
             body.append(

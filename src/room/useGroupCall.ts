@@ -22,12 +22,20 @@ import {
   GroupCallErrorCode,
   GroupCallUnknownDeviceError,
   GroupCallError,
+  GroupCallStatsReportEvent,
+  GroupCallStatsReport,
 } from "matrix-js-sdk/src/webrtc/groupCall";
 import { CallFeed, CallFeedEvent } from "matrix-js-sdk/src/webrtc/callFeed";
 import { RoomMember } from "matrix-js-sdk/src/models/room-member";
 import { useTranslation } from "react-i18next";
 import { IWidgetApiRequest } from "matrix-widget-api";
-import { MatrixClient } from "matrix-js-sdk";
+import { MatrixClient, RoomStateEvent } from "matrix-js-sdk";
+import {
+  ByteSentStatsReport,
+  ConnectionStatsReport,
+  SummaryStatsReport,
+  CallFeedReport,
+} from "matrix-js-sdk/src/webrtc/stats/statsReport";
 
 import { usePageUnload } from "./usePageUnload";
 import { PosthogAnalytics } from "../analytics/PosthogAnalytics";
@@ -35,6 +43,7 @@ import { TranslatedError, translatedError } from "../TranslatedError";
 import { ElementWidgetActions, ScreenshareStartData, widget } from "../widget";
 import { OTelGroupCallMembership } from "../otel/OTelGroupCallMembership";
 import { ElementCallOpenTelemetry } from "../otel/otel";
+import { checkForParallelCalls } from "./checkForParallelCalls";
 
 export enum ConnectionState {
   EstablishingCall = "establishing call", // call hasn't been established yet
@@ -56,7 +65,7 @@ export interface UseGroupCallReturnType {
   localVideoMuted: boolean;
   error: TranslatedError | null;
   initLocalCallFeed: () => void;
-  enter: () => void;
+  enter: () => Promise<void>;
   leave: () => void;
   toggleLocalVideoMuted: () => void;
   toggleMicrophoneMuted: () => void;
@@ -337,6 +346,30 @@ export function useGroupCall(
       }
     }
 
+    function onConnectionStatsReport(
+      report: GroupCallStatsReport<ConnectionStatsReport>
+    ): void {
+      groupCallOTelMembership?.onConnectionStatsReport(report);
+    }
+
+    function onByteSentStatsReport(
+      report: GroupCallStatsReport<ByteSentStatsReport>
+    ): void {
+      groupCallOTelMembership?.onByteSentStatsReport(report);
+    }
+
+    function onSummaryStatsReport(
+      report: GroupCallStatsReport<SummaryStatsReport>
+    ): void {
+      groupCallOTelMembership?.onSummaryStatsReport(report);
+    }
+
+    function onCallFeedStatsReport(
+      report: GroupCallStatsReport<CallFeedReport>
+    ): void {
+      groupCallOTelMembership?.onCallFeedStatsReport(report);
+    }
+
     groupCall.on(GroupCallEvent.GroupCallStateChanged, onGroupCallStateChanged);
     groupCall.on(GroupCallEvent.UserMediaFeedsChanged, onUserMediaFeedsChanged);
     groupCall.on(
@@ -352,6 +385,24 @@ export function useGroupCall(
     groupCall.on(GroupCallEvent.CallsChanged, onCallsChanged);
     groupCall.on(GroupCallEvent.ParticipantsChanged, onParticipantsChanged);
     groupCall.on(GroupCallEvent.Error, onError);
+    groupCall.on(
+      GroupCallStatsReportEvent.ConnectionStats,
+      onConnectionStatsReport
+    );
+    groupCall.on(
+      GroupCallStatsReportEvent.ByteSentStats,
+      onByteSentStatsReport
+    );
+    groupCall.on(GroupCallStatsReportEvent.SummaryStats, onSummaryStatsReport);
+    groupCall.on(
+      GroupCallStatsReportEvent.CallFeedStats,
+      onCallFeedStatsReport
+    );
+
+    groupCall.room.currentState.on(
+      RoomStateEvent.Update,
+      checkForParallelCalls
+    );
 
     updateState({
       error: null,
@@ -399,6 +450,26 @@ export function useGroupCall(
         onParticipantsChanged
       );
       groupCall.removeListener(GroupCallEvent.Error, onError);
+      groupCall.removeListener(
+        GroupCallStatsReportEvent.ConnectionStats,
+        onConnectionStatsReport
+      );
+      groupCall.removeListener(
+        GroupCallStatsReportEvent.ByteSentStats,
+        onByteSentStatsReport
+      );
+      groupCall.removeListener(
+        GroupCallStatsReportEvent.SummaryStats,
+        onSummaryStatsReport
+      );
+      groupCall.removeListener(
+        GroupCallStatsReportEvent.CallFeedStats,
+        onCallFeedStatsReport
+      );
+      groupCall.room.currentState.off(
+        RoomStateEvent.Update,
+        checkForParallelCalls
+      );
       leaveCall();
     };
   }, [groupCall, updateState, leaveCall]);
@@ -412,7 +483,7 @@ export function useGroupCall(
     [groupCall]
   );
 
-  const enter = useCallback(() => {
+  const enter = useCallback(async () => {
     if (
       groupCall.state !== GroupCallState.LocalCallFeedUninitialized &&
       groupCall.state !== GroupCallState.LocalCallFeedInitialized
@@ -427,7 +498,7 @@ export function useGroupCall(
     // have started tracking by the time calls start getting created.
     groupCallOTelMembership?.onJoinCall();
 
-    groupCall.enter().catch((error) => {
+    await groupCall.enter().catch((error) => {
       console.error(error);
       updateState({ error });
     });

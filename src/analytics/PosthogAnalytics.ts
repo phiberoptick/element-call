@@ -29,6 +29,7 @@ import {
   MuteCameraTracker,
   MuteMicrophoneTracker,
   UndecryptableToDeviceEventTracker,
+  QualitySurveyEventTracker,
 } from "./PosthogEvents";
 import { Config } from "../config/Config";
 import { getUrlParams } from "../UrlParams";
@@ -69,6 +70,7 @@ export enum RegistrationType {
 interface PlatformProperties {
   appVersion: string;
   matrixBackend: "embedded" | "jssdk";
+  callBackend: "livekit" | "full-mesh";
 }
 
 interface PosthogSettings {
@@ -101,6 +103,10 @@ export class PosthogAnalytics {
   private anonymity = Anonymity.Disabled;
   private platformSuperProperties = {};
   private registrationType: RegistrationType = RegistrationType.Guest;
+
+  public static hasInstance(): boolean {
+    return Boolean(this.internalInstance);
+  }
 
   public static get instance(): PosthogAnalytics {
     if (!this.internalInstance) {
@@ -186,6 +192,7 @@ export class PosthogAnalytics {
     return {
       appVersion,
       matrixBackend: widget ? "embedded" : "jssdk",
+      callBackend: "full-mesh",
     };
   }
 
@@ -227,7 +234,7 @@ export class PosthogAnalytics {
       .join("");
   }
 
-  public async identifyUser(analyticsIdGenerator: () => string) {
+  private async identifyUser(analyticsIdGenerator: () => string) {
     if (this.anonymity == Anonymity.Pseudonymous && this.enabled) {
       // Check the user's account_data for an analytics ID to use. Storing the ID in account_data allows
       // different devices to send the same ID.
@@ -319,7 +326,12 @@ export class PosthogAnalytics {
     this.setAnonymity(Anonymity.Disabled);
   }
 
-  public updateSuperProperties() {
+  public onLoginStatusChanged(): void {
+    const optInAnalytics = getSetting("opt-in-analytics", false);
+    this.updateAnonymityAndIdentifyUser(optInAnalytics);
+  }
+
+  private updateSuperProperties() {
     // Update super properties in posthog with our platform (app version, platform).
     // These properties will be subsequently passed in every event.
     //
@@ -339,7 +351,7 @@ export class PosthogAnalytics {
     return this.eventSignup.getSignupEndTime() > new Date(0);
   }
 
-  public async updateAnonymityAndIdentifyUser(
+  private async updateAnonymityAndIdentifyUser(
     pseudonymousOptIn: boolean
   ): Promise<void> {
     // Update this.anonymity based on the user's analytics opt-in settings
@@ -347,6 +359,10 @@ export class PosthogAnalytics {
       ? Anonymity.Pseudonymous
       : Anonymity.Disabled;
     this.setAnonymity(anonymity);
+
+    // We may not yet have a Matrix client at this point, if not, bail. This should get
+    // triggered again by onLoginStatusChanged once we do have a client.
+    if (!window.matrixclient) return;
 
     if (anonymity === Anonymity.Pseudonymous) {
       this.setRegistrationType(
@@ -385,7 +401,7 @@ export class PosthogAnalytics {
     this.capture(eventName, properties, options);
   }
 
-  public startListeningToSettingsChanges(): void {
+  private startListeningToSettingsChanges(): void {
     // Listen to account data changes from sync so we can observe changes to relevant flags and update.
     // This is called -
     //  * On page load, when the account data is first received by sync
@@ -418,4 +434,5 @@ export class PosthogAnalytics {
   public eventMuteMicrophone = new MuteMicrophoneTracker();
   public eventMuteCamera = new MuteCameraTracker();
   public eventUndecryptableToDevice = new UndecryptableToDeviceEventTracker();
+  public eventQualitySurvey = new QualitySurveyEventTracker();
 }
